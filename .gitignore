@@ -10,6 +10,19 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+*.app/
+*.dmg
+*.pkg
+
+# GitHub Release artifacts (keep source files and Paper.spec in Git)
+releases/
+*.zip
+*.tar.gz
+
 # Local environment configuration
 .env
 .env.*

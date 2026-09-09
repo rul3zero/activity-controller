@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Paper — Notes</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #343530; background: #eeede8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 32px; }
+    button, select, input, textarea { font: inherit; }
+    button, select { border: 1px solid #d9d9d1; border-radius: 7px; background: #fafaf7; color: inherit; }
+    button { padding: 8px 12px; cursor: pointer; }
+    button:hover { background: #efefe8; }
+    button:disabled { opacity: .45; cursor: default; }
+    button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #657c50; outline-offset: 3px; }
+    .window { max-width: 1200px; margin: auto; border: 1px solid #d5d6cd; border-radius: 12px; background: #fbfbf8; box-shadow: 0 20px 65px #282c2110; overflow: hidden; }
+    header { padding: 15px 22px; display: flex; gap: 16px; align-items: center; border-bottom: 1px solid #dfe0d8; background: #f5f5ef; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -.5px; font-size: 19px; }
+    .brand svg { width: 23px; height: 23px; }
+    .label { color: #77796d; font-size: 12px; }
+    .address { margin-left: auto; font-size: 12px; color: #6a725e; text-decoration: none; }
+    .workspace { display: grid; grid-template-columns: minmax(0,1fr) 290px; min-height: 650px; }
+    .editor { display: flex; flex-direction: column; min-width: 0; }
+    .toolbar { display: flex; gap: 9px; align-items: center; padding: 16px 22px; border-bottom: 1px solid #ebebe4; }
+    .filename { font-size: 13px; margin-right: auto; }
+    .toolbar button { padding: 6px 11px; font-size: 12px; }
+    textarea { width: 100%; flex: 1; resize: none; min-height: 440px; border: 0; outline: none; padding: 29px 32px; background: #fffffc; color: #343830; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; line-height: 1.85; tab-size: 4; }
+    textarea::placeholder { color: #adb0a2; }
+    .editor-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 22px; border-top: 1px solid #ebebe4; font-size: 11px; color: #7c8072; }
+    aside { background: #f5f5ef; padding: 26px 22px; border-left: 1px solid #dfe0d8; }
+    h1 { font-size: 15px; font-weight: 650; margin: 0 0 8px; }
+    aside p { margin: 0 0 20px; font-size: 12px; line-height: 1.6; color: #7b7e70; }
+    .status { display: flex; align-items: center; gap: 8px; padding: 12px; background: #e9eadd; border-radius: 7px; margin-bottom: 8px; font-size: 12px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #95998c; }
+    .status[data-state="Running"] .dot { background: #568844; }
+    .status[data-state="Paused"] .dot { background: #bd9442; }
+    #mode { margin-left: auto; font-size: 10px; color: #777d6c; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 0; font-size: 12px; border-bottom: 1px solid #e3e5db; }
+    select { padding: 6px; font-size: 11px; max-width: 130px; }
+    input[type=checkbox] { width: 16px; height: 16px; accent-color: #637a4c; }
+    .actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 22px; }
+    .actions button { flex: 1; font-size: 12px; }
+    .primary { background: #657c50; border-color: #657c50; color: white; }
+    .primary:hover { background: #556d40; }
+    .help { margin-top: 24px; color: #838675; font-size: 11px; line-height: 1.8; }
+    kbd { font: inherit; color: #555b4b; }
+    #error, #permission { font-size: 12px; line-height: 1.5; color: #955d38; margin-top: 12px; }
+    #error:empty { display: none; }
+    #quit { font-size: 11px; color: #7b806f; margin-top: 22px; width: 100%; background: transparent; }
+    .bottom { max-width: 1200px; margin: 16px auto; display: flex; gap: 12px; justify-content: space-between; font-size: 11px; color: #8c9081; }
+    .bottom a { color: inherit; }
+    @media (max-width: 760px) { body { padding: 12px; } .workspace { grid-template-columns: 1fr; } aside { border-left: 0; border-top: 1px solid #dfe0d8; } header { flex-wrap: wrap; } .address { font-size: 11px; } .label { display: none; } textarea { padding: 20px; min-height: 320px; } }
+  </style>
+</head>
+<body>
+  <main class="window">
+    <header>
+      <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M14 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-9M10 14l1-4 8-8 3 3-8 8-4 1Z"/></svg>Paper</div>
+      <span class="label">A little space to write.</span>
+      <a class="address" id="url" href="/" title="Your local Paper address"></a>
+      <button id="copy" title="Copy localhost link" aria-label="Copy localhost link">Copy link</button>
+    </header>
+    <div class="workspace">
+      <section class="editor" aria-label="Text editor">
+        <div class="toolbar"><span class="filename">▤ &nbsp; Untitled.txt</span><button id="import">Open .txt</button><button id="download">Export</button><button id="save">Save</button><input id="file" type="file" accept=".txt,.md,.csv,.log,text/plain" hidden></div>
+        <textarea id="note" aria-label="Your notes" placeholder="Start writing here…" spellcheck="false" disabled></textarea>
+        <div class="editor-footer"><span id="saved" role="status">Loading note…</span><span id="count">0 words · 0 characters</span><span>Plain text · UTF-8</span></div>
+      </section>
+      <aside aria-label="Desktop controls">
+        <h1>Desktop tools</h1><p>Set your mouse and keyboard actions.<br>Changes apply while running.</p>
+        <div class="status" id="status-box"><span class="dot"></span><strong id="status" role="status">Connecting…</strong><span id="mode"></span></div>
+        <div id="permission" hidden>Accessibility access is needed for desktop input. Open the settings shortcut in Paper's menu bar menu, allow the app, then reopen Paper.</div>
+        <label class="row" for="intensity">Intensity <select id="intensity"><option value="very_low">Very low</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="very_high">Very high</option></select></label>
+        <label class="row" for="mouse">Mouse movement <input id="mouse" type="checkbox"></label>
+        <label class="row" for="scroll">Scrolling <input id="scroll" type="checkbox"></label>
+        <label class="row" for="tabs">Tab navigation <input id="tabs" type="checkbox"></label>
+        <label class="row" for="switch">Switch windows · ⌘ Tab <input id="switch" type="checkbox"></label>
+        <label class="row" for="text_click">Click editable text <input id="text_click" type="checkbox"></label>
+        <div class="actions"><button id="start" class="primary" disabled>Start</button><button id="pause" disabled>Pause</button><button id="stop" disabled>Stop</button></div>
+        <div id="error" role="alert"></div>
+        <div class="help"><kbd>Ctrl + 1</kbd> &nbsp; Pause / resume<br><kbd>Ctrl + 2</kbd> &nbsp; Stop<br>Screen corner &nbsp; Emergency stop<br><br>Closing this tab keeps Paper in the menu bar.</div>
+        <button id="quit">Quit Paper</button>
+      </aside>
+    </div>
+  </main>
+  <footer class="bottom"><span>Stored on this Mac. Ready when you are.</span><a id="footer-url" href="/">Local connection</a></footer>
+  <script>
+    const token = '__PAPER_TOKEN__';
+    const $ = id => document.getElementById(id);
+    const fields = ['intensity', 'mouse', 'scroll', 'tabs', 'switch', 'text_click'];
+    let pending = 0, closed = false, noteLoaded = false, dirty = false, saving = null, saveTimer;
+    const localURL = location.origin + '/';
+    $('url').textContent = localURL;
+    $('footer-url').textContent = localURL;
+    async function api(path, data) {
+      const options = data === undefined ? {cache: 'no-store'} : {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Paper-Token': token}, body: JSON.stringify(data)};
+      const response = await fetch(path, options);
+      const value = await response.json();
+      if (!response.ok) throw Error(value.error || 'Request failed');
+      return value;
+    }
+    function apply(state) {
+      for (const key of fields) {
+        if ($(key).type === 'checkbox') $(key).checked = state.config[key];
+        else $(key).value = state.config[key];
+      }
+      $('status').textContent = state.status;
+      $('status-box').dataset.state = state.status;
+      $('mode').textContent = state.dry_run ? 'PREVIEW' : 'LIVE';
+      $('permission').hidden = state.accessibility || state.dry_run;
+      $('start').disabled = state.active || pending > 0;
+      $('pause').disabled = !state.active || state.stopping || pending > 0;
+      $('stop').disabled = !state.active || state.stopping || pending > 0;
+      $('pause').textContent = state.paused ? 'Resume' : 'Pause';
+      $('error').textContent = state.error || '';
+    }
+    async function refresh() {
+      if (closed || pending) return;
+      try {
+        const state = await api('/api/state');
+        if (!pending) apply(state);
+      } catch (error) {
+        $('status').textContent = 'Disconnected';
+        $('error').textContent = 'Paper is offline. Reopen it from the menu bar.';
+        for (const key of ['start', 'pause', 'stop']) $(key).disabled = true;
+      }
+    }
+    async function command(path, data = {}) {
+      pending++;
+      for (const key of [...fields, 'start', 'pause', 'stop']) $(key).disabled = true;
+      try { const state = await api(path, data); pending--; apply(state); }
+      catch (error) { pending--; $('error').textContent = error.message; }
+      finally {
+        for (const key of fields) $(key).disabled = false;
+        // Restore button state after a failed request without erasing its message.
+        try { const message = $('error').textContent; apply(await api('/api/state')); if (message) $('error').textContent = message; } catch (_) {}
+      }
+    }
+    for (const key of fields) $(key).onchange = () => command('/api/settings', {[key]: $(key).type === 'checkbox' ? $(key).checked : $(key).value});
+    for (const key of ['start', 'pause', 'stop']) $(key).onclick = () => command('/api/' + key);
+    function count() {
+      const text = $('note').value;
+      $('count').textContent = (text.trim() ? text.trim().split(/\s+/).length : 0) + ' words · ' + text.length + ' characters';
+    }
+    async function saveNote() {
+      clearTimeout(saveTimer);
+      if (saving) await saving;
+      if (!noteLoaded || !dirty) return;
+      const text = $('note').value;
+      $('saved').textContent = 'Saving…';
+      saving = api('/api/note', {text});
+      try {
+        await saving;
+        dirty = $('note').value !== text;
+        $('saved').textContent = dirty ? 'Unsaved changes' : 'Saved on this Mac';
+      } catch (error) { $('saved').textContent = 'Save failed — use Export to keep a copy'; throw error; }
+      finally { saving = null; }
+    }
+    function changed() {
+      dirty = true; count(); $('saved').textContent = 'Unsaved changes'; clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => saveNote().catch(() => {}), 600);
+    }
+    $('note').oninput = changed;
+    $('save').onclick = () => saveNote().catch(() => {});
+    $('import').onclick = () => $('file').click();
+    $('file').onchange = async () => {
+      const file = $('file').files[0]; if (!file) return;
+      if (file.size > 200000) { $('saved').textContent = 'Choose a text file under 200 KB'; return; }
+      if ($('note').value && !confirm('Replace the current note? Export it first to keep a copy.')) return;
+      $('note').value = await file.text(); changed(); $('file').value = '';
+    };
+    $('download').onclick = () => {
+      const url = URL.createObjectURL(new Blob([$('note').value], {type: 'text/plain;charset=utf-8'}));
+      const a = document.createElement('a'); a.href = url; a.download = 'Untitled.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    $('copy').onclick = async () => {
+      try { await navigator.clipboard.writeText(localURL); $('copy').textContent = 'Copied'; setTimeout(() => $('copy').textContent = 'Copy link', 1500); }
+      catch (_) { $('error').textContent = 'Copy the address shown in the top bar.'; }
+    };
+    $('quit').onclick = async () => {
+      try { await saveNote(); if (dirty) return; await api('/api/quit', {}); closed = true; clearInterval(poll); $('status').textContent = 'Closed'; $('error').textContent = 'Paper has quit. You can close this tab.'; for (const key of [...fields, 'start', 'pause', 'stop', 'quit']) $(key).disabled = true; }
+      catch (error) { $('error').textContent = error.message; }
+    };
+    window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
+    document.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key === 's') { event.preventDefault(); saveNote().catch(() => {}); } });
+    api('/api/note').then(data => { $('note').value = data.text; noteLoaded = true; $('note').disabled = false; $('saved').textContent = 'Saved on this Mac'; count(); }).catch(() => { $('saved').textContent = 'Could not load your note. Reload to try again.'; });
+    refresh(); const poll = setInterval(refresh, 1000);
+  </script>
+</body>
+</html>

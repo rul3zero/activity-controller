@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from pathlib import Path
+import secrets
+import signal
 import sys
 from dataclasses import dataclass, replace
 from http import HTTPStatus
@@ -13,6 +16,8 @@ from time import monotonic
 from typing import Callable
 from urllib.parse import urlparse
 import webbrowser
+
+from storage import AppStorage, InstanceLock
 
 if sys.platform != "darwin":
     raise SystemExit("This script currently supports macOS only.")
@@ -297,7 +302,20 @@ class ActivitySimulator:
         if config.dry_run:
             LOGGER.info("DRY RUN: move mouse to (%s, %s) over %.2fs", x, y, duration)
             return
-        pyautogui.moveTo(x, y, duration=duration)
+        # Short steps keep Pause/Stop responsive, even on high intensity.
+        start_x, start_y = pyautogui.position()
+        steps = max(1, int(duration / 0.04))
+        for step in range(1, steps + 1):
+            if not self.input_allowed():
+                return
+            fraction = step / steps
+            pyautogui.moveTo(
+                round(start_x + (x - start_x) * fraction),
+                round(start_y + (y - start_y) * fraction),
+                _pause=False,
+            )
+            if not self.sleep_with_control(duration / steps):
+                return
 
     def random_scroll(self) -> None:
         if not self.input_allowed():
@@ -373,14 +391,13 @@ class ActivitySimulator:
             return False
 
     def click_when_text_cursor_context(self) -> None:
-        if not self.input_allowed() or not self.is_editable_text_under_mouse():
-            return
-
         if not self.input_allowed():
             return
         config, _ = self.settings.snapshot()
         if config.dry_run:
-            LOGGER.info("DRY RUN: click editable text element")
+            LOGGER.info("DRY RUN: click if the pointer is over editable text")
+            return
+        if not self.is_editable_text_under_mouse() or not self.input_allowed():
             return
         pyautogui.click()
 
@@ -472,7 +489,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--intensity",
         choices=tuple(INTENSITY_SETTINGS),
-        default=CONFIG.intensity,
+        default=None,
         help="override the configured activity intensity",
     )
     parser.add_argument(
@@ -485,6 +502,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="run the original terminal-only automation loop",
     )
+    parser.add_argument("--web", action="store_true", help="browser interface without the menu bar")
+    parser.add_argument("--open", action="store_true", help="open the editor on launch")
+    parser.add_argument("--port", type=int, default=8765, help="localhost port (default: 8765; 0 chooses a free port)")
     return parser.parse_args(argv)
 
 
@@ -494,7 +514,7 @@ def run_headless(config: ActivityConfig) -> int:
     running_event.set()
     stop_event = Event()
     hotkeys = HotkeyController(running_event, stop_event)
-    listener = keyboard.Listener(
+    listener = None if config.dry_run else keyboard.Listener(
         on_press=hotkeys.on_press,
         on_release=hotkeys.on_release,
     )
@@ -509,7 +529,8 @@ def run_headless(config: ActivityConfig) -> int:
         config.intensity,
         " in dry-run mode" if config.dry_run else "",
     )
-    listener.start()
+    if listener is not None:
+        listener.start()
 
     try:
         simulator.run()
@@ -523,8 +544,9 @@ def run_headless(config: ActivityConfig) -> int:
     finally:
         stop_event.set()
         running_event.set()
-        listener.stop()
-        listener.join(timeout=1.0)
+        if listener is not None:
+            listener.stop()
+            listener.join(timeout=1.0)
 
     return 0
 
@@ -532,8 +554,9 @@ def run_headless(config: ActivityConfig) -> int:
 class WebAutomationApp:
     """Thread-safe controller exposed through a local browser control panel."""
 
-    def __init__(self, initial_config: ActivityConfig) -> None:
+    def __init__(self, initial_config: ActivityConfig, storage: AppStorage | None = None) -> None:
         self.settings = RuntimeSettings(initial_config)
+        self.storage = storage
         self.running_event = Event()
         self.stop_event = Event()
         self.shutdown_event = Event()
@@ -541,6 +564,7 @@ class WebAutomationApp:
         self.listener: keyboard.Listener | None = None
         self.hotkeys: HotkeyController | None = None
         self.status = "Ready"
+        self.error = ""
         self._lock = RLock()
 
     def state(self) -> dict[str, object]:
@@ -551,6 +575,10 @@ class WebAutomationApp:
                 "status": self.status,
                 "active": active,
                 "paused": active and not self.running_event.is_set(),
+                "stopping": active and self.stop_event.is_set(),
+                "dry_run": config.dry_run,
+                "error": self.error,
+                "accessibility": bool(AS.AXIsProcessTrusted()),
                 "config": {
                     "intensity": config.intensity,
                     "mouse": config.enable_mouse_movement,
@@ -577,32 +605,49 @@ class WebAutomationApp:
         }
         if not mapped:
             return
-        if "intensity" in mapped and mapped["intensity"] not in INTENSITY_SETTINGS:
+        if "intensity" in mapped and (
+            not isinstance(mapped["intensity"], str)
+            or mapped["intensity"] not in INTENSITY_SETTINGS
+        ):
             raise ValueError("Choose a valid intensity level")
         for key, value in mapped.items():
             if key != "intensity" and not isinstance(value, bool):
                 raise ValueError(f"{key} must be true or false")
-        self.settings.update(**mapped)
+        with self._lock:
+            previous, _ = self.settings.snapshot()
+            updated = replace(previous, **mapped)
+            validate_config(updated, require_enabled=False)
+            if self.storage is not None:
+                self.storage.save_config(updated)
+            self.settings.update(**mapped)
 
     def start(self) -> None:
         with self._lock:
             if self.worker is not None and self.worker.is_alive():
                 return
+            if self.shutdown_event.is_set():
+                raise ValueError("Paper is shutting down")
             config, _ = self.settings.snapshot()
             validate_config(config)
+            if not config.dry_run and not AS.AXIsProcessTrusted():
+                self.error = "Enable Accessibility for Paper (or your terminal) in System Settings, then reopen the app."
+                raise ValueError(self.error)
+            self.error = ""
             self.running_event = Event()
             self.running_event.set()
             self.stop_event = Event()
             self.hotkeys = HotkeyController(
                 self.running_event, self.stop_event, self._hotkey_changed
             )
-            self.listener = keyboard.Listener(
+            # Dry run never needs an event tap or system input permissions.
+            self.listener = None if config.dry_run else keyboard.Listener(
                 on_press=self.hotkeys.on_press, on_release=self.hotkeys.on_release
             )
             simulator = ActivitySimulator(self.settings, self.running_event, self.stop_event)
             self.worker = Thread(target=self._run_worker, args=(simulator,), daemon=True)
             try:
-                self.listener.start()
+                if self.listener is not None:
+                    self.listener.start()
                 self.worker.start()
             except Exception:
                 self.stop_event.set()
@@ -627,7 +672,7 @@ class WebAutomationApp:
             self.stop_event.set()
             self.running_event.set()
             self._stop_listener()
-            self.status = "Stopped"
+            self.status = "Stopping" if self.worker is not None else "Stopped"
 
     def request_shutdown(self) -> None:
         self.stop()
@@ -636,7 +681,7 @@ class WebAutomationApp:
     def _hotkey_changed(self) -> None:
         with self._lock:
             if self.stop_event.is_set():
-                self.status = "Stopped"
+                self.status = "Stopping"
                 self._stop_listener()
             elif self.worker is not None and self.worker.is_alive():
                 self.status = "Running" if self.running_event.is_set() else "Paused"
@@ -650,69 +695,87 @@ class WebAutomationApp:
             self.listener = None
 
     def _run_worker(self, simulator: ActivitySimulator) -> None:
+        error = ""
         try:
             simulator.run()
         except pyautogui.FailSafeException:
+            error = "Stopped by the screen-corner fail-safe. Move the pointer away from the corner before restarting."
             LOGGER.info("Automation stopped by PyAutoGUI fail-safe")
-        except Exception:
+        except Exception as exc:
+            error = str(exc) or type(exc).__name__
             LOGGER.exception("Automation worker stopped because of an unexpected error")
         finally:
             with self._lock:
                 self.stop_event.set()
                 self._stop_listener()
                 self.worker = None
+                self.error = error
                 self.status = "Stopped"
 
 
-CONTROL_PANEL_HTML = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Activity Controller</title><style>
-:root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033}*{box-sizing:border-box}body{margin:0;padding:32px 16px}.card{max-width:620px;margin:auto;background:#fff;border:1px solid #e3e8f2;border-radius:16px;padding:28px;box-shadow:0 12px 34px #27355b12}h1{margin:0;font-size:25px}p{color:#617089;margin:8px 0 26px}.status{display:flex;justify-content:space-between;align-items:center;background:#f6f8fc;border-radius:10px;padding:15px 17px;margin-bottom:24px}.badge{font-weight:700;padding:6px 12px;border-radius:999px;background:#dbe3ef;color:#475569}.badge.Running{background:#d9f7e4;color:#166534}.badge.Paused{background:#ffedd5;color:#9a3412}.badge.Stopped{background:#fee2e2;color:#991b1b}h2{font-size:16px;margin:24px 0 12px}.row{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid #eef1f6}.row:last-child{border:0}select{min-width:155px;padding:7px;border:1px solid #cbd5e1;border-radius:7px;background:#fff}input{width:19px;height:19px;accent-color:#2563eb}.buttons{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:28px}button{border:0;border-radius:9px;padding:11px;font:inherit;font-weight:650;background:#e9eef7;color:#243047;cursor:pointer}button.primary{background:#2563eb;color:#fff}button.stop{background:#fee2e2;color:#991b1b}button:disabled{opacity:.5;cursor:not-allowed}.footer{font-size:12px;margin-top:21px;color:#758198}.quit{margin-top:14px;background:none;color:#64748b;text-decoration:underline;font-size:13px}#error{color:#b42318;font-size:13px;margin-top:12px;min-height:18px}</style></head>
-<body><main class="card"><h1>Activity Controller</h1><p>Control mouse and keyboard activity from this local page.</p><section class="status"><span>Current status</span><span id="status" class="badge">Ready</span></section><h2>Settings</h2><label class="row">Intensity <select id="intensity"><option>very_low</option><option>low</option><option>medium</option><option>high</option><option>very_high</option></select></label><label class="row">Mouse movement <input id="mouse" type="checkbox"></label><label class="row">Scrolling <input id="scroll" type="checkbox"></label><label class="row">Tab navigation <input id="tabs" type="checkbox"></label><label class="row">Window switching (Command+Tab) <input id="switch" type="checkbox"></label><label class="row">Click editable text fields <input id="text_click" type="checkbox"></label><div class="buttons"><button id="start" class="primary">Start</button><button id="pause">Pause</button><button id="stop" class="stop">Stop</button></div><div id="error"></div><button id="quit" class="quit">Stop and close controller</button><div class="footer">Hotkeys: Ctrl+1 pause/resume · Ctrl+2 stop · move to a screen corner for PyAutoGUI fail-safe.</div></main><script>
-const fields=['intensity','mouse','scroll','tabs','switch','text_click'];let syncing=false;
-async function api(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data||{})});const v=await r.json();if(!r.ok)throw Error(v.error||'Request failed');return v}
-function apply(s){const c=s.config;syncing=true;for(const k of fields){const e=document.getElementById(k);if(e.type==='checkbox')e.checked=c[k];else e.value=c[k]}syncing=false;const badge=document.getElementById('status');badge.textContent=s.status;badge.className='badge '+s.status;document.getElementById('pause').textContent=s.paused?'Resume':'Pause';document.getElementById('start').disabled=s.active;document.getElementById('pause').disabled=!s.active;document.getElementById('stop').disabled=!s.active}
-async function refresh(){try{apply(await (await fetch('/api/state')).json())}catch(e){document.getElementById('error').textContent='Controller connection lost.'}}
-for(const k of fields)document.getElementById(k).addEventListener('change',async()=>{if(syncing)return;try{apply(await api('/api/settings',{[k]:document.getElementById(k).type==='checkbox'?document.getElementById(k).checked:document.getElementById(k).value}));document.getElementById('error').textContent=''}catch(e){document.getElementById('error').textContent=e.message;refresh()}});
-document.getElementById('start').onclick=async()=>{try{apply(await api('/api/start'))}catch(e){document.getElementById('error').textContent=e.message}};
-document.getElementById('pause').onclick=async()=>{try{apply(await api('/api/pause'))}catch(e){document.getElementById('error').textContent=e.message}};
-document.getElementById('stop').onclick=async()=>{try{apply(await api('/api/stop'))}catch(e){document.getElementById('error').textContent=e.message}};
-document.getElementById('quit').onclick=async()=>{await api('/api/quit');document.body.innerHTML='<main class="card"><h1>Controller stopped</h1><p>You can close this tab.</p></main>'};refresh();setInterval(refresh,800);
-</script></body></html>"""
-
-
 class ControlPanelHandler(BaseHTTPRequestHandler):
-    """HTTP endpoints for the loopback-only control panel."""
+    """Only same-origin loopback requests can control this app."""
 
-    server: ThreadingHTTPServer
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(5)
 
-    def _json(self, status: HTTPStatus, data: dict[str, object]) -> None:
-        payload = json.dumps(data).encode("utf-8")
+    def _trusted_request(self) -> bool:
+        host = self.headers.get("Host", "")
+        allowed = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+        if host not in allowed:
+            self.send_error(HTTPStatus.FORBIDDEN, "Invalid host")
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin != f"http://{host}":
+            self.send_error(HTTPStatus.FORBIDDEN, "Invalid origin")
+            return False
+        return True
+
+    def _send(self, status, body, content_type):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        if urlparse(self.path).path == "/api/state":
-            self._json(HTTPStatus.OK, self.server.controller.state())
-            return
-        if urlparse(self.path).path != "/":
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        body = CONTROL_PANEL_HTML.encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+    def _json(self, status, data):
+        self._send(status, json.dumps(data).encode("utf-8"), "application/json; charset=utf-8")
+
+    def do_GET(self):
+        if not self._trusted_request():
+            return
+        path = urlparse(self.path).path
+        if path == "/api/state":
+            self._json(HTTPStatus.OK, self.server.controller.state())
+        elif path == "/api/note":
+            try:
+                self._json(HTTPStatus.OK, {"text": self.server.controller.storage.read_note()})
+            except OSError:
+                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Could not read your note."})
+        elif path == "/":
+            html = (Path(__file__).parent / "ui" / "index.html").read_text(encoding="utf-8")
+            html = html.replace("__PAPER_TOKEN__", self.server.token)
+            self._send(HTTPStatus.OK, html.encode("utf-8"), "text/html; charset=utf-8")
+        else:
+            self.send_error(HTTPStatus.NOT_FOUND)
+
+    def do_POST(self):
+        if not self._trusted_request():
+            return
+        if self.headers.get("X-Paper-Token") != self.server.token:
+            self._json(HTTPStatus.FORBIDDEN, {"error": "Reload Paper to reconnect."})
+            return
         try:
+            if self.headers.get_content_type() != "application/json":
+                raise ValueError("Expected application/json")
             length = int(self.headers.get("Content-Length", "0"))
+            if not 0 <= length <= 1024 * 1024:
+                raise ValueError("Request is too large (maximum 1 MB)")
             payload = json.loads(self.rfile.read(length) or b"{}")
             if not isinstance(payload, dict):
                 raise ValueError("Invalid request")
@@ -720,6 +783,13 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == "/api/settings":
                 controller.update_settings(payload)
+            elif path == "/api/note":
+                note = payload.get("text")
+                if not isinstance(note, str):
+                    raise ValueError("Note must be text")
+                controller.storage.save_note(note)
+                self._json(HTTPStatus.OK, {"saved": True})
+                return
             elif path == "/api/start":
                 controller.start()
             elif path == "/api/pause":
@@ -735,67 +805,110 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:
-            LOGGER.exception("Control-panel request failed")
+            LOGGER.exception("Paper request failed")
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
-    def log_message(self, _format: str, *_args: object) -> None:
+    def log_message(self, _format, *_args):
         return
 
 
-def run_web_gui(config: ActivityConfig) -> int:
-    """Open a local control panel without creating a native AppKit event loop."""
-    validate_config(config)
-    controller = WebAutomationApp(config)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), ControlPanelHandler)
-    server.controller = controller  # type: ignore[attr-defined]
+def create_server(controller: WebAutomationApp, port: int = 8765):
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), ControlPanelHandler)
+    except OSError as exc:
+        import errno
+        if exc.errno != errno.EADDRINUSE or port == 0:
+            raise
+        LOGGER.info("Port %s is busy; selecting a free port", port)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ControlPanelHandler)
+    server.controller = controller
+    server.token = secrets.token_urlsafe(32)
     server.daemon_threads = True
+    return server
+
+
+def run_app(config: ActivityConfig, storage: AppStorage, args, instance: InstanceLock) -> int:
+    controller = WebAutomationApp(config, storage)
+    server = create_server(controller, args.port)
     server_thread = Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     url = f"http://127.0.0.1:{server.server_port}/"
-    LOGGER.info("Activity Controller is available at %s", url)
-    if not webbrowser.open_new_tab(url):
-        LOGGER.warning("Could not open a browser automatically; open %s manually", url)
+    instance.publish(url)
+    LOGGER.info("Paper is available at %s", url)
 
+    def shutdown(_signal, _frame):
+        controller.request_shutdown()
+
+    previous_signals = {sig: signal.signal(sig, shutdown) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        while not controller.shutdown_event.wait(0.25):
-            pass
-    except KeyboardInterrupt:
-        LOGGER.info("Stopping Activity Controller")
+        if args.open or args.web:
+            webbrowser.open(url)
+        if args.web:
+            while not controller.shutdown_event.wait(0.25):
+                pass
+        else:
+            from tray import run_tray
+            run_tray(controller, url)
     finally:
         controller.request_shutdown()
         server.shutdown()
         server.server_close()
-        server_thread.join(timeout=1.0)
+        server_thread.join(timeout=2)
         worker = controller.worker
         if worker is not None:
-            worker.join(timeout=2.0)
+            worker.join(timeout=3)
+        for sig, handler in previous_signals.items():
+            signal.signal(sig, handler)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    from logging.handlers import RotatingFileHandler
+
     args = parse_args(argv)
-    config = replace(
-        CONFIG,
-        intensity=args.intensity,
-        dry_run=CONFIG.dry_run or args.dry_run,
+    if not 0 <= args.port <= 65535:
+        raise SystemExit("Port must be between 0 and 65535")
+    storage = AppStorage()
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            RotatingFileHandler(storage.root / "paper.log", maxBytes=1_000_000, backupCount=2),
+        ],
     )
-
-    if config.enable_text_cursor_clicking and not AS.AXIsProcessTrusted():
-        LOGGER.warning(
-            "Accessibility permission is not granted; editable-text detection and "
-            "global hotkeys may not work. Check System Settings > Privacy & Security."
-        )
-
-    if args.headless:
-        return run_headless(config)
-
     try:
-        return run_web_gui(config)
-    except Exception as exc:
-        LOGGER.exception("Unable to start the local control panel: %s", exc)
-        LOGGER.error("Use --headless to run without the control panel.")
+        saved = storage.read_config()
+        saved.pop("dry_run", None)
+        config = replace(CONFIG, **saved)
+        validate_config(config, require_enabled=False)
+        bool_fields = [name for name in saved if name.startswith("enable_")]
+        if any(not isinstance(saved[name], bool) for name in bool_fields):
+            raise ValueError("Invalid saved toggle")
+    except (TypeError, ValueError):
+        LOGGER.warning("Saved settings are invalid; using defaults")
+        config = CONFIG
+    config = replace(config, intensity=args.intensity or config.intensity, dry_run=args.dry_run)
+    instance = InstanceLock(storage)
+    try:
+        if not instance.acquire():
+            url = instance.url()
+            if url:
+                webbrowser.open(url)
+                LOGGER.info("Opened the existing Paper instance at %s", url)
+            else:
+                LOGGER.warning("Paper is already starting; use its menu bar icon.")
+            return 0
+        if args.headless:
+            if not config.dry_run and not AS.AXIsProcessTrusted():
+                LOGGER.error("Grant Accessibility to your terminal in System Settings before running.")
+                return 1
+            return run_headless(config)
+        return run_app(config, storage, args, instance)
+    except Exception:
+        LOGGER.exception("Unable to start Paper")
         return 1
+    finally:
+        instance.close()
 
 
 if __name__ == "__main__":

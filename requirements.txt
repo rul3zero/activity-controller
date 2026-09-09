@@ -1,3 +1,4 @@
 pyautogui
 pynput
 pyobjc-framework-ApplicationServices
+pyobjc-framework-Cocoa
