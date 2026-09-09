@@ -1,0 +1,20 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment configuration
+.env
+.env.*
+!.env.example
+
+# macOS metadata
+.DS_Store
+._*
