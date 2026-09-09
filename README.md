@@ -4,8 +4,6 @@ A macOS desktop activity simulator with a local browser control panel and a
 terminal-only mode. It can randomly move the mouse, scroll, switch applications
 with Command+Tab, navigate with Tab, and click editable text fields.
 
-Suggested script filename: `activity_controller.py`. The current entry point is
-`script.py`, as used in the examples below.
 
 ## Setup
 
@@ -28,7 +26,7 @@ pause or stop activity.
 Open the browser control panel:
 
 ```sh
-python script.py
+python main.py
 ```
 
 The panel starts in the **Ready** state. Choose the activity options and click
@@ -38,13 +36,13 @@ its URL is printed in the terminal if the browser does not open automatically.
 Preview actions in the terminal without sending mouse or keyboard input:
 
 ```sh
-python script.py --headless --dry-run
+python main.py --headless --dry-run
 ```
 
 Run activity immediately in terminal-only mode at low intensity:
 
 ```sh
-python script.py --headless --intensity low
+python main.py --headless --intensity low
 ```
 
 | Option | Description |
@@ -70,7 +68,7 @@ By default, mouse movement, scrolling, application switching, and editable-text
 clicking are enabled; Tab navigation is disabled.
 
 To change startup defaults or advanced settings, edit `ActivityConfig` and
-`CONFIG` in `script.py`. Edit `INTENSITY_SETTINGS` to adjust timing and action
+`CONFIG` in `main.py`. Edit `INTENSITY_SETTINGS` to adjust timing and action
 ranges. Browser setting changes are kept in memory and do not persist after exit.
 
 Editable-text clicking checks macOS accessibility roles and skips fields

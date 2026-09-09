@@ -1,9 +1,3 @@
-"""Randomly perform lightweight desktop activity on macOS.
-
-Ctrl+1 pauses or resumes the simulator. Ctrl+2 stops it cleanly.
-Move the mouse to a screen corner to trigger PyAutoGUI's emergency fail-safe.
-"""
-
 from __future__ import annotations
 
 import argparse
