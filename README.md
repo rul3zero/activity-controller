@@ -13,7 +13,7 @@ environment and install the dependencies:
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install pyautogui pynput pyobjc-framework-ApplicationServices
+python -m pip install -r requirements.txt
 ```
 
 Grant Accessibility permission to the terminal or IDE running the script in
